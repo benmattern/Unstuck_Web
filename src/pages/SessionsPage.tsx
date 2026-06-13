@@ -11,10 +11,15 @@ const formTypeLabel: Record<string, string> = {
 
 const knownQuestionPrompts: Record<string, string> = {
   current_focus: "What are you trying to move forward?",
+  currentFocus: "What are you trying to move forward?",
   stuck_level: "How stuck do you feel right now?",
+  stuckLevel: "How stuck do you feel right now?",
   main_blocker: "What is the main blocker?",
+  mainBlocker: "What is the main blocker?",
   next_action: "What is the next small action?",
+  nextAction: "What is the next small action?",
   ten_minute_action: "Can you do that in the next 10 minutes?",
+  tenMinuteAction: "Can you do that in the next 10 minutes?",
 };
 
 type AnswerPair = {
@@ -52,6 +57,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function humanizeKey(value: string) {
   return value
+    .replace(/([a-z])([A-Z])/g, "$1 $2")
     .replace(/_/g, " ")
     .replace(/\b\w/g, (char) => char.toUpperCase());
 }
@@ -60,28 +66,87 @@ function toAnswerText(value: unknown) {
   if (value == null) return "";
   if (typeof value === "string") return value;
   if (typeof value === "number" || typeof value === "boolean") return String(value);
+  if (isRecord(value)) {
+    return toAnswerText(value.value ?? value.answer ?? value.text ?? value.label);
+  }
   return "";
 }
 
+function parseJsonString(value: string): unknown {
+  try {
+    return JSON.parse(value);
+  } catch {
+    return value;
+  }
+}
+
+function getQuestionText(record: Record<string, unknown>) {
+  const directQuestion =
+    record.prompt ??
+    record.questionText ??
+    record.questionPrompt ??
+    record.question_prompt ??
+    record.text ??
+    record.title ??
+    record.label;
+
+  if (typeof directQuestion === "string") {
+    return directQuestion;
+  }
+
+  if (isRecord(record.question)) {
+    const nestedQuestion =
+      record.question.prompt ??
+      record.question.questionText ??
+      record.question.questionPrompt ??
+      record.question.question_prompt ??
+      record.question.text ??
+      record.question.title ??
+      record.question.label;
+
+    if (typeof nestedQuestion === "string") {
+      return nestedQuestion;
+    }
+  }
+
+  const questionId =
+    record.questionId ??
+    record.question_id ??
+    (isRecord(record.question) ? record.question.id ?? record.question.questionId : undefined);
+
+  if (typeof questionId === "string") {
+    return knownQuestionPrompts[questionId] ?? humanizeKey(questionId);
+  }
+
+  return "";
+}
+
+function getAnswerValue(record: Record<string, unknown>) {
+  if ("answer" in record) return record.answer;
+  if ("value" in record) return record.value;
+  if ("answerValue" in record) return record.answerValue;
+  if ("answer_value" in record) return record.answer_value;
+  if (isRecord(record.response)) return record.response.value ?? record.response.answer;
+  return undefined;
+}
+
 function normalizeAnswerItem(item: unknown): AnswerPair[] {
+  if (typeof item === "string") {
+    return normalizeAnswerItem(parseJsonString(item));
+  }
+
   if (!isRecord(item)) {
     return [];
   }
 
-  if (typeof item.prompt === "string" && "answer" in item) {
-    return [
-      {
-        question: item.prompt,
-        answer: toAnswerText(item.answer),
-      },
-    ];
-  }
+  const question = getQuestionText(item);
+  const answerValue = getAnswerValue(item);
 
-  if (typeof item.questionText === "string" && "value" in item) {
+  if (question && answerValue !== undefined) {
     return [
       {
-        question: item.questionText,
-        answer: toAnswerText(item.value),
+        question,
+        answer: toAnswerText(answerValue),
       },
     ];
   }
@@ -91,16 +156,43 @@ function normalizeAnswerItem(item: unknown): AnswerPair[] {
 
 function normalizeAnswerDictionary(record: Record<string, unknown>): AnswerPair[] {
   return Object.entries(record)
-    .filter(([, value]) => value == null || ["string", "number", "boolean"].includes(typeof value))
-    .map(([key, value]) => ({
-      question: knownQuestionPrompts[key] ?? humanizeKey(key),
-      answer: toAnswerText(value),
-    }))
+    .flatMap(([key, value]) => {
+      if (isRecord(value)) {
+        const question = getQuestionText(value) || knownQuestionPrompts[key] || humanizeKey(key);
+        const answerValue = getAnswerValue(value);
+
+        if (answerValue !== undefined) {
+          return [
+            {
+              question,
+              answer: toAnswerText(answerValue),
+            },
+          ];
+        }
+
+        return [];
+      }
+
+      if (value == null || ["string", "number", "boolean"].includes(typeof value)) {
+        return [
+          {
+            question: knownQuestionPrompts[key] ?? humanizeKey(key),
+            answer: toAnswerText(value),
+          },
+        ];
+      }
+
+      return [];
+    })
     .filter((pair) => pair.question);
 }
 
 function normalizeAnswers(data: unknown): AnswerPair[] {
   if (data == null) return [];
+
+  if (typeof data === "string") {
+    return normalizeAnswers(parseJsonString(data));
+  }
 
   if (Array.isArray(data)) {
     return data
@@ -109,6 +201,19 @@ function normalizeAnswers(data: unknown): AnswerPair[] {
   }
 
   if (isRecord(data)) {
+    const nestedAnswers =
+      data.answers ??
+      data.answerResponses ??
+      data.answer_responses ??
+      data.responses ??
+      data.items ??
+      data.values;
+
+    if (nestedAnswers !== undefined) {
+      const pairs = normalizeAnswers(nestedAnswers);
+      if (pairs.length > 0) return pairs;
+    }
+
     return normalizeAnswerDictionary(data);
   }
 
