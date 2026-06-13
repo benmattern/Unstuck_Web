@@ -22,9 +22,22 @@ const knownQuestionPrompts: Record<string, string> = {
   tenMinuteAction: "Can you do that in the next 10 minutes?",
 };
 
+const shortCheckInQuestionOrder = [
+  "current_focus",
+  "stuck_level",
+  "main_blocker",
+  "next_action",
+  "ten_minute_action",
+];
+
 type AnswerPair = {
   question: string;
   answer: string;
+};
+
+type NormalizedAnswer = AnswerPair & {
+  questionId?: string;
+  originalIndex: number;
 };
 
 function formatFormType(value: string) {
@@ -80,6 +93,28 @@ function parseJsonString(value: string): unknown {
   }
 }
 
+function normalizeQuestionId(value: string) {
+  return value.replace(/([a-z])([A-Z])/g, "$1_$2").toLowerCase();
+}
+
+function getQuestionId(record: Record<string, unknown>) {
+  const directQuestionId = record.questionId ?? record.question_id;
+
+  if (typeof directQuestionId === "string") {
+    return normalizeQuestionId(directQuestionId);
+  }
+
+  if (isRecord(record.question)) {
+    const nestedQuestionId = record.question.id ?? record.question.questionId ?? record.question.question_id;
+
+    if (typeof nestedQuestionId === "string") {
+      return normalizeQuestionId(nestedQuestionId);
+    }
+  }
+
+  return undefined;
+}
+
 function getQuestionText(record: Record<string, unknown>) {
   const directQuestion =
     record.prompt ??
@@ -109,12 +144,9 @@ function getQuestionText(record: Record<string, unknown>) {
     }
   }
 
-  const questionId =
-    record.questionId ??
-    record.question_id ??
-    (isRecord(record.question) ? record.question.id ?? record.question.questionId : undefined);
+  const questionId = getQuestionId(record);
 
-  if (typeof questionId === "string") {
+  if (questionId) {
     return knownQuestionPrompts[questionId] ?? humanizeKey(questionId);
   }
 
@@ -130,9 +162,9 @@ function getAnswerValue(record: Record<string, unknown>) {
   return undefined;
 }
 
-function normalizeAnswerItem(item: unknown): AnswerPair[] {
+function normalizeAnswerItem(item: unknown, originalIndex = 0): NormalizedAnswer[] {
   if (typeof item === "string") {
-    return normalizeAnswerItem(parseJsonString(item));
+    return normalizeAnswerItem(parseJsonString(item), originalIndex);
   }
 
   if (!isRecord(item)) {
@@ -141,12 +173,15 @@ function normalizeAnswerItem(item: unknown): AnswerPair[] {
 
   const question = getQuestionText(item);
   const answerValue = getAnswerValue(item);
+  const questionId = getQuestionId(item);
 
   if (question && answerValue !== undefined) {
     return [
       {
         question,
         answer: toAnswerText(answerValue),
+        questionId,
+        originalIndex,
       },
     ];
   }
@@ -154,10 +189,25 @@ function normalizeAnswerItem(item: unknown): AnswerPair[] {
   return normalizeAnswerDictionary(item);
 }
 
-function normalizeAnswerDictionary(record: Record<string, unknown>): AnswerPair[] {
+function sortAnswersByKnownQuestionOrder(pairs: NormalizedAnswer[]) {
+  return [...pairs].sort((a, b) => {
+    const aIndex = a.questionId ? shortCheckInQuestionOrder.indexOf(a.questionId) : -1;
+    const bIndex = b.questionId ? shortCheckInQuestionOrder.indexOf(b.questionId) : -1;
+    const aKnown = aIndex >= 0;
+    const bKnown = bIndex >= 0;
+
+    if (aKnown && bKnown) return aIndex - bIndex;
+    if (aKnown) return -1;
+    if (bKnown) return 1;
+    return a.originalIndex - b.originalIndex;
+  });
+}
+
+function normalizeAnswerDictionary(record: Record<string, unknown>): NormalizedAnswer[] {
   return Object.entries(record)
-    .flatMap(([key, value]) => {
+    .flatMap(([key, value], originalIndex) => {
       if (isRecord(value)) {
+        const questionId = getQuestionId(value) ?? normalizeQuestionId(key);
         const question = getQuestionText(value) || knownQuestionPrompts[key] || humanizeKey(key);
         const answerValue = getAnswerValue(value);
 
@@ -166,6 +216,8 @@ function normalizeAnswerDictionary(record: Record<string, unknown>): AnswerPair[
             {
               question,
               answer: toAnswerText(answerValue),
+              questionId,
+              originalIndex,
             },
           ];
         }
@@ -178,6 +230,8 @@ function normalizeAnswerDictionary(record: Record<string, unknown>): AnswerPair[
           {
             question: knownQuestionPrompts[key] ?? humanizeKey(key),
             answer: toAnswerText(value),
+            questionId: normalizeQuestionId(key),
+            originalIndex,
           },
         ];
       }
@@ -195,9 +249,11 @@ function normalizeAnswers(data: unknown): AnswerPair[] {
   }
 
   if (Array.isArray(data)) {
-    return data
-      .flatMap((item) => normalizeAnswerItem(item))
-      .filter((pair) => pair.question);
+    return sortAnswersByKnownQuestionOrder(
+      data.flatMap((item, originalIndex) => normalizeAnswerItem(item, originalIndex))
+    )
+      .filter((pair) => pair.question)
+      .map(({ question, answer }) => ({ question, answer }));
   }
 
   if (isRecord(data)) {
@@ -214,7 +270,9 @@ function normalizeAnswers(data: unknown): AnswerPair[] {
       if (pairs.length > 0) return pairs;
     }
 
-    return normalizeAnswerDictionary(data);
+    return sortAnswersByKnownQuestionOrder(normalizeAnswerDictionary(data))
+      .filter((pair) => pair.question)
+      .map(({ question, answer }) => ({ question, answer }));
   }
 
   return [];
