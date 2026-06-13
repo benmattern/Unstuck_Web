@@ -9,6 +9,19 @@ const formTypeLabel: Record<string, string> = {
   main_form: "Main Form",
 };
 
+const knownQuestionPrompts: Record<string, string> = {
+  current_focus: "What are you trying to move forward?",
+  stuck_level: "How stuck do you feel right now?",
+  main_blocker: "What is the main blocker?",
+  next_action: "What is the next small action?",
+  ten_minute_action: "Can you do that in the next 10 minutes?",
+};
+
+type AnswerPair = {
+  question: string;
+  answer: string;
+};
+
 function formatFormType(value: string) {
   return (
     formTypeLabel[value] ??
@@ -33,73 +46,78 @@ function formatSessionDate(value: string) {
   return `${dateLabel} at ${timeLabel}`;
 }
 
-function normalizeAnswerPairs(data: unknown): Array<{ question: string; answer: string }> {
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function humanizeKey(value: string) {
+  return value
+    .replace(/_/g, " ")
+    .replace(/\b\w/g, (char) => char.toUpperCase());
+}
+
+function toAnswerText(value: unknown) {
+  if (value == null) return "";
+  if (typeof value === "string") return value;
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  return "";
+}
+
+function normalizeAnswerItem(item: unknown): AnswerPair[] {
+  if (!isRecord(item)) {
+    return [];
+  }
+
+  if (typeof item.prompt === "string" && "answer" in item) {
+    return [
+      {
+        question: item.prompt,
+        answer: toAnswerText(item.answer),
+      },
+    ];
+  }
+
+  if (typeof item.questionText === "string" && "value" in item) {
+    return [
+      {
+        question: item.questionText,
+        answer: toAnswerText(item.value),
+      },
+    ];
+  }
+
+  return normalizeAnswerDictionary(item);
+}
+
+function normalizeAnswerDictionary(record: Record<string, unknown>): AnswerPair[] {
+  return Object.entries(record)
+    .filter(([, value]) => value == null || ["string", "number", "boolean"].includes(typeof value))
+    .map(([key, value]) => ({
+      question: knownQuestionPrompts[key] ?? humanizeKey(key),
+      answer: toAnswerText(value),
+    }))
+    .filter((pair) => pair.question);
+}
+
+function normalizeAnswers(data: unknown): AnswerPair[] {
   if (data == null) return [];
 
   if (Array.isArray(data)) {
     return data
-      .flatMap((item) => normalizeAnswerPairs(item))
-      .filter((pair) => pair.question && pair.answer);
+      .flatMap((item) => normalizeAnswerItem(item))
+      .filter((pair) => pair.question);
   }
 
-  if (typeof data !== "object") {
-    return [];
+  if (isRecord(data)) {
+    return normalizeAnswerDictionary(data);
   }
 
-  const record = data as Record<string, unknown>;
-  const pairs: Array<{ question: string; answer: string }> = [];
-
-  if ("prompt" in record && ("answer" in record || "value" in record)) {
-    const question = String(record.prompt ?? "Question");
-    const answer = String(record.answer ?? record.value ?? "");
-    return [{ question, answer }];
-  }
-
-  for (const key of Object.keys(record)) {
-    const value = record[key];
-
-    if (
-      value == null ||
-      typeof value === "boolean" ||
-      typeof value === "number" ||
-      typeof value === "string"
-    ) {
-      pairs.push({ question: key.replace(/_/g, " "), answer: String(value) });
-      continue;
-    }
-
-    if (Array.isArray(value)) {
-      const nested = normalizeAnswerPairs(value);
-      if (nested.length > 0) {
-        pairs.push(...nested);
-        continue;
-      }
-    }
-
-    if (typeof value === "object") {
-      const nested = normalizeAnswerPairs(value);
-      if (nested.length > 0) {
-        pairs.push(...nested);
-        continue;
-      }
-      pairs.push({ question: key.replace(/_/g, " "), answer: JSON.stringify(value) });
-    }
-  }
-
-  return pairs;
+  return [];
 }
 
 function renderAnswerPreview(data: unknown) {
-  const pairs = normalizeAnswerPairs(data);
+  const pairs = normalizeAnswers(data);
   if (pairs.length === 0) {
-    if (data && typeof data === "object") {
-      return (
-        <pre className="mt-4 overflow-x-auto rounded-2xl border border-white/10 bg-slate-950/60 p-4 text-sm leading-6 text-slate-300">
-          {JSON.stringify(data, null, 2)}
-        </pre>
-      );
-    }
-
     return (
       <div className="mt-4 rounded-2xl border border-white/10 bg-slate-950/45 px-4 py-3 text-sm text-slate-400">
         No readable details available.
@@ -117,7 +135,9 @@ function renderAnswerPreview(data: unknown) {
           <div className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">
             {item.question}
           </div>
-          <div className="mt-2 text-sm leading-6 text-slate-200">{item.answer}</div>
+          <div className="mt-2 text-sm leading-6 text-slate-200">
+            {item.answer || "No answer provided."}
+          </div>
         </div>
       ))}
     </div>
