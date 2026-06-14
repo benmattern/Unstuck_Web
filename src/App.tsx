@@ -6,9 +6,17 @@ import PrimaryButton from "./components/PrimaryButton";
 import SecondaryButton from "./components/SecondaryButton";
 import SessionsPage from "./pages/SessionsPage";
 import NewCheckInPage from "./pages/NewCheckInPage";
+import { getProfile, updateProfile } from "./services/profileService";
+import type { Profile } from "./types/profile";
 
 function App() {
   const [session, setSession] = useState<Session | null>(null);
+  const [profile, setProfile] = useState<Profile | null>(null);
+  const [profileName, setProfileName] = useState("");
+  const [profileLoading, setProfileLoading] = useState(false);
+  const [profileSaving, setProfileSaving] = useState(false);
+  const [profileError, setProfileError] = useState<string | null>(null);
+  const [profileSuccess, setProfileSuccess] = useState<string | null>(null);
   const [email, setEmail] = useState("usera@test.com");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
@@ -25,6 +33,50 @@ function App() {
     return () => listener.subscription.unsubscribe();
   }, []);
 
+  useEffect(() => {
+    let isMounted = true;
+
+    if (!session) {
+      setProfile(null);
+      setProfileName("");
+      setProfileError(null);
+      setProfileSuccess(null);
+      return;
+    }
+
+    setProfileLoading(true);
+    setProfileError(null);
+    setProfileSuccess(null);
+
+    getProfile()
+      .then(({ data, error }) => {
+        if (!isMounted) return;
+
+        if (error) {
+          setProfile(null);
+          setProfileName("");
+          setProfileError(error.message || String(error));
+          return;
+        }
+
+        setProfile(data);
+        setProfileName(data?.display_name ?? "");
+      })
+      .catch((err) => {
+        if (!isMounted) return;
+        setProfile(null);
+        setProfileName("");
+        setProfileError(String(err));
+      })
+      .finally(() => {
+        if (isMounted) setProfileLoading(false);
+      });
+
+    return () => {
+      isMounted = false;
+    };
+  }, [session]);
+
   async function signIn() {
     setError("");
     const { error } = await supabase.auth.signInWithPassword({ email, password });
@@ -34,6 +86,31 @@ function App() {
   async function signOut() {
     await supabase.auth.signOut();
   }
+
+  async function saveProfile() {
+    setProfileSaving(true);
+    setProfileError(null);
+    setProfileSuccess(null);
+
+    const { data, error } = await updateProfile({
+      display_name: profileName.trim() || null,
+    });
+
+    setProfileSaving(false);
+
+    if (error) {
+      setProfileError(error.message || String(error));
+      return;
+    }
+
+    setProfile(data);
+    setProfileName(data?.display_name ?? "");
+    setProfileSuccess("Profile saved.");
+  }
+
+  const signedInEmail = session?.user.email ?? "";
+  const fallbackDisplayName = signedInEmail.split("@")[0] || "Signed in user";
+  const displayName = profile?.display_name?.trim() || fallbackDisplayName;
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100">
@@ -60,8 +137,11 @@ function App() {
                       <div className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">
                         Signed in
                       </div>
-                      <div className="mt-2 break-all text-base font-semibold text-white">
-                        {session.user.email}
+                      <div className="mt-2 text-base font-semibold text-white">
+                        {profileLoading ? "Loading profile..." : displayName}
+                      </div>
+                      <div className="mt-1 break-all text-sm text-slate-400">
+                        {signedInEmail}
                       </div>
                       <div className="mt-4">
                         <SecondaryButton onClick={signOut}>Sign Out</SecondaryButton>
@@ -149,6 +229,46 @@ function App() {
 
             {session && (
               <div className="space-y-6">
+                <AppCard className="p-5 sm:p-6">
+                  <div className="flex flex-col gap-5 sm:flex-row sm:items-end sm:justify-between">
+                    <div className="min-w-0 flex-1">
+                      <div className="text-lg font-semibold tracking-tight text-white">Profile</div>
+                      <p className="mt-1 text-sm leading-6 text-slate-400">
+                        Set the name shown in your Unstuck web companion.
+                      </p>
+                      <label className="mt-4 block">
+                        <span className="mb-2 block text-sm font-medium text-slate-300">
+                          Display name
+                        </span>
+                        <input
+                          className="min-h-12 w-full rounded-2xl border border-white/[0.12] bg-slate-950/70 px-4 py-3 text-base text-white placeholder:text-slate-500 focus:border-blue-300/60 focus:outline-none focus:ring-4 focus:ring-blue-400/10"
+                          value={profileName}
+                          onChange={(event) => {
+                            setProfileName(event.target.value);
+                            setProfileSuccess(null);
+                          }}
+                          placeholder={fallbackDisplayName}
+                        />
+                      </label>
+                    </div>
+                    <div className="sm:w-40">
+                      <PrimaryButton onClick={saveProfile} disabled={profileLoading || profileSaving}>
+                        {profileSaving ? "Saving..." : "Save"}
+                      </PrimaryButton>
+                    </div>
+                  </div>
+                  {profileError && (
+                    <div className="mt-4 rounded-2xl border border-rose-300/20 bg-rose-500/10 px-4 py-3 text-sm text-rose-200">
+                      {profileError}
+                    </div>
+                  )}
+                  {profileSuccess && (
+                    <div className="mt-4 rounded-2xl border border-emerald-300/20 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-200">
+                      {profileSuccess}
+                    </div>
+                  )}
+                </AppCard>
+
                 {activeTab === "sessions" ? (
                   <SessionsPage key={refreshKey} refreshKey={refreshKey} />
                 ) : (
