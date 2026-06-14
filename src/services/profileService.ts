@@ -1,8 +1,9 @@
 import { supabase } from "../lib/supabaseClient";
-import type { Profile } from "../types/profile";
+import type { PreferredTheme, Profile } from "../types/profile";
 
 type ProfileUpdate = {
-  display_name: string | null;
+  display_name?: string | null;
+  preferred_theme?: PreferredTheme;
 };
 
 async function getCurrentUser() {

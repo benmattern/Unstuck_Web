@@ -7,14 +7,23 @@ import SecondaryButton from "./components/SecondaryButton";
 import SessionsPage from "./pages/SessionsPage";
 import NewCheckInPage from "./pages/NewCheckInPage";
 import { getProfile, updateProfile } from "./services/profileService";
-import type { Profile } from "./types/profile";
+import type { PreferredTheme, Profile } from "./types/profile";
+
+const supportedThemes: PreferredTheme[] = ["system", "light", "dark"];
+
+function normalizePreferredTheme(value: string | null | undefined): PreferredTheme {
+  return supportedThemes.includes(value as PreferredTheme) ? (value as PreferredTheme) : "system";
+}
 
 function App() {
   const [session, setSession] = useState<Session | null>(null);
   const [profile, setProfile] = useState<Profile | null>(null);
   const [profileName, setProfileName] = useState("");
+  const [preferredTheme, setPreferredTheme] = useState<PreferredTheme>("system");
+  const [resolvedTheme, setResolvedTheme] = useState<"light" | "dark">("dark");
   const [profileLoading, setProfileLoading] = useState(false);
   const [profileSaving, setProfileSaving] = useState(false);
+  const [themeSaving, setThemeSaving] = useState(false);
   const [profileError, setProfileError] = useState<string | null>(null);
   const [profileSuccess, setProfileSuccess] = useState<string | null>(null);
   const [email, setEmail] = useState("usera@test.com");
@@ -34,11 +43,30 @@ function App() {
   }, []);
 
   useEffect(() => {
+    const mediaQuery = window.matchMedia("(prefers-color-scheme: dark)");
+
+    function resolveTheme() {
+      const nextResolvedTheme =
+        preferredTheme === "system" ? (mediaQuery.matches ? "dark" : "light") : preferredTheme;
+
+      setResolvedTheme(nextResolvedTheme);
+      document.documentElement.dataset.theme = nextResolvedTheme;
+      document.documentElement.style.colorScheme = nextResolvedTheme;
+    }
+
+    resolveTheme();
+    mediaQuery.addEventListener("change", resolveTheme);
+
+    return () => mediaQuery.removeEventListener("change", resolveTheme);
+  }, [preferredTheme]);
+
+  useEffect(() => {
     let isMounted = true;
 
     if (!session) {
       setProfile(null);
       setProfileName("");
+      setPreferredTheme("system");
       setProfileError(null);
       setProfileSuccess(null);
       return;
@@ -61,11 +89,13 @@ function App() {
 
         setProfile(data);
         setProfileName(data?.display_name ?? "");
+        setPreferredTheme(normalizePreferredTheme(data?.preferred_theme));
       })
       .catch((err) => {
         if (!isMounted) return;
         setProfile(null);
         setProfileName("");
+        setPreferredTheme("system");
         setProfileError(String(err));
       })
       .finally(() => {
@@ -105,7 +135,33 @@ function App() {
 
     setProfile(data);
     setProfileName(data?.display_name ?? "");
+    if (data?.preferred_theme) {
+      setPreferredTheme(normalizePreferredTheme(data.preferred_theme));
+    }
     setProfileSuccess("Profile saved.");
+  }
+
+  async function saveTheme(nextTheme: PreferredTheme) {
+    setPreferredTheme(nextTheme);
+    setThemeSaving(true);
+    setProfileError(null);
+    setProfileSuccess(null);
+
+    const { data, error } = await updateProfile({
+      preferred_theme: nextTheme,
+    });
+
+    setThemeSaving(false);
+
+    if (error) {
+      setProfileError(error.message || String(error));
+      setPreferredTheme(normalizePreferredTheme(profile?.preferred_theme));
+      return;
+    }
+
+    setProfile(data);
+    setPreferredTheme(normalizePreferredTheme(data?.preferred_theme));
+    setProfileSuccess("Theme saved.");
   }
 
   const signedInEmail = session?.user.email ?? "";
@@ -113,7 +169,11 @@ function App() {
   const displayName = profile?.display_name?.trim() || fallbackDisplayName;
 
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100">
+    <div
+      className={`min-h-screen ${
+        resolvedTheme === "light" ? "bg-slate-100 text-slate-950" : "bg-slate-950 text-slate-100"
+      }`}
+    >
       <div className="min-h-screen bg-[linear-gradient(145deg,rgba(37,99,235,0.18)_0%,rgba(124,58,237,0.13)_38%,rgba(2,6,23,0)_72%)]">
         <div className="px-4 py-5 sm:px-6 sm:py-8 lg:px-10">
           <div className="mx-auto max-w-5xl space-y-6 sm:space-y-8">
@@ -230,8 +290,8 @@ function App() {
             {session && (
               <div className="space-y-6">
                 <AppCard className="p-5 sm:p-6">
-                  <div className="flex flex-col gap-5 sm:flex-row sm:items-end sm:justify-between">
-                    <div className="min-w-0 flex-1">
+                  <div className="grid gap-5 lg:grid-cols-[1fr_1fr_auto] lg:items-end">
+                    <div className="min-w-0">
                       <div className="text-lg font-semibold tracking-tight text-white">Profile</div>
                       <p className="mt-1 text-sm leading-6 text-slate-400">
                         Set the name shown in your Unstuck web companion.
@@ -251,7 +311,26 @@ function App() {
                         />
                       </label>
                     </div>
-                    <div className="sm:w-40">
+                    <label className="block">
+                      <span className="mb-2 block text-sm font-medium text-slate-300">Theme</span>
+                      <select
+                        className="min-h-12 w-full rounded-2xl border border-white/[0.12] bg-slate-950/70 px-4 py-3 text-base text-white focus:border-blue-300/60 focus:outline-none focus:ring-4 focus:ring-blue-400/10"
+                        value={preferredTheme}
+                        onChange={(event) => saveTheme(event.target.value as PreferredTheme)}
+                        disabled={profileLoading || themeSaving}
+                      >
+                        <option value="system" className="bg-slate-950 text-white">
+                          System
+                        </option>
+                        <option value="light" className="bg-slate-950 text-white">
+                          Light
+                        </option>
+                        <option value="dark" className="bg-slate-950 text-white">
+                          Dark
+                        </option>
+                      </select>
+                    </label>
+                    <div className="lg:w-40">
                       <PrimaryButton onClick={saveProfile} disabled={profileLoading || profileSaving}>
                         {profileSaving ? "Saving..." : "Save"}
                       </PrimaryButton>
